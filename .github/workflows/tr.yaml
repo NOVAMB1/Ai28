@@ -30,11 +30,145 @@ on:
         default: 'small'
         type: choice
         options:
-          - 'tiny (سریع‌ترین - کیفیت پایین)'
-          - 'base (سریع - کیفیت متوسط)'
-          - 'small (متوسط - کیفیت خوب)'
-          - 'medium (کند - کیفیت عالی)'
-          - 'large (خیلی کند - کیفیت فوق‌العاده)'
+          - 'tiny'
+          - 'base'
+          - 'small'
+          - 'medium'
+          - 'large'
+          - 'turbo'
+      
+      language:
+        description: 'زبان صدا'
+        required: true
+        default: 'auto'
+        type: choice
+        options:
+          - 'auto'
+          - 'en'
+          - 'fa'
+          - 'ru'
+          - 'es'
+          - 'fr'
+          - 'de'
+          - 'ja'
+          - 'ko'
+          - 'zh'
+      
+      translate_to:
+        description: 'ترجمه به'
+        required: false
+        default: 'none'
+        type: choice
+        options:
+          - 'none'
+          - 'fa'
+          - 'en'
+          - 'es'
+          - 'fr'
+          - 'de'
+
+jobs:
+  process-subtitle:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg
+      
+      - name: Install Whisper
+        run: |
+          pip install --quiet --upgrade pip
+          pip install --quiet openai-whisper
+          pip install --quiet pysrt deep-translator
+      
+      - name: Download video
+        id: download
+        run: |
+          if [ "${{ github.event.inputs.video_source }}" = "direct_url" ]; then
+            curl -L -o input_video.mp4 "${{ github.event.inputs.direct_url }}"
+          else
+            if [ "${{ github.event.inputs.release_tag }}" = "latest" ]; then
+              TAG=$(curl -s "https://api.github.com/repos/${{ github.repository }}/releases/latest" | jq -r .tag_name)
+            else
+              TAG="${{ github.event.inputs.release_tag }}"
+            fi
+            DOWNLOAD_URL=$(curl -s "https://api.github.com/repos/${{ github.repository }}/releases/tags/$TAG" | jq -r '.assets[0].browser_download_url')
+            curl -L -o input_video.mp4 "$DOWNLOAD_URL"
+          fi
+          
+          if [ ! -f input_video.mp4 ]; then
+            echo "Error: Video not downloaded!"
+            exit 1
+          fi
+          echo "✅ Video: $(du -sh input_video.mp4 | cut -f1)"
+      
+      - name: Generate subtitle
+        id: whisper
+        run: |
+          MODEL="${{ github.event.inputs.whisper_model }}"
+          LANG="${{ github.event.inputs.language }}"
+          
+          if [ "$LANG" = "auto" ]; then
+            whisper input_video.mp4 --model $MODEL --output_format srt --output_dir .
+          else
+            whisper input_video.mp4 --model $MODEL --language $LANG --output_format srt --output_dir .
+          fi
+          
+          ORIGINAL_SRT=$(ls *.srt | head -n 1)
+          echo "original_srt=$ORIGINAL_SRT" >> $GITHUB_OUTPUT
+          echo "✅ Subtitle: $ORIGINAL_SRT"
+      
+      - name: Upload original subtitle
+        uses: actions/upload-artifact@v4
+        with:
+          name: original-subtitle
+          path: ${{ steps.whisper.outputs.original_srt }}
+          retention-days: 30
+      
+      - name: Translate subtitle
+        id: translate
+        if: github.event.inputs.translate_to != 'none'
+        continue-on-error: true
+        run: |
+          ORIGINAL="${{ steps.whisper.outputs.original_srt }}"
+          TARGET="${{ github.event.inputs.translate_to }}"
+          OUTPUT="translated_${TARGET}.srt"
+          
+          python3 << EOF
+          import pysrt
+          from deep_translator import GoogleTranslator
+          
+          subs = pysrt.open("$ORIGINAL")
+          translator = GoogleTranslator(source='auto', target='$TARGET')
+          
+          for sub in subs:
+              if sub.text and sub.text.strip():
+                  try:
+                      sub.text = translator.translate(sub.text)
+                  except:
+                      pass
+          
+          subs.save("$OUTPUT")
+          EOF
+          
+          echo "translated_srt=$OUTPUT" >> $GITHUB_OUTPUT
+      
+      - name: Upload translated subtitle
+        if: steps.translate.outputs.translated_srt != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: translated-subtitle
+          path: ${{ steps.translate.outputs.translated_srt }}
+          retention-days: 30
+      
+      - name: Cleanup
+        if: always()
+        run: rm -f input_video.mp4          - 'large (خیلی کند - کیفیت فوق‌العاده)'
           - 'turbo (بهینه - سرعت و کیفیت خوب)'
       
       language_detection:
