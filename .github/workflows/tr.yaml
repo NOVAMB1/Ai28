@@ -19,7 +19,7 @@ on:
         default: ''
       
       release_tag:
-        description: 'تگ Release'
+        description: 'تگ Release (برای دانلود فیلم)'
         required: false
         type: string
         default: 'latest'
@@ -66,10 +66,28 @@ on:
           - 'es'
           - 'fr'
           - 'de'
+      
+      save_location:
+        description: 'محل ذخیره زیرنویس'
+        required: true
+        default: 'artifact'
+        type: choice
+        options:
+          - 'artifact (دانلود موقت)'
+          - 'repository (کامیت به مخزن)'
+          - 'release (آپلود به Release)'
+      
+      release_tag_output:
+        description: 'تگ Release برای ذخیره (اگر save_location=release باشد)'
+        required: false
+        type: string
+        default: 'subtitles'
 
 jobs:
   process-subtitle:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write  # برای نوشتن در مخزن و Release
     
     steps:
       - name: Checkout repository
@@ -119,16 +137,9 @@ jobs:
             whisper input_video.mp4 --model $MODEL --language $LANG --output_format srt --output_dir .
           fi
           
-          ORIGINAL_SRT=$(ls *.srt | head -n 1)
+          ORIGINAL_SRT=$(ls *.srt | grep -v "translated" | head -n 1)
           echo "original_srt=$ORIGINAL_SRT" >> $GITHUB_OUTPUT
           echo "✅ Subtitle: $ORIGINAL_SRT"
-      
-      - name: Upload original subtitle
-        uses: actions/upload-artifact@v4
-        with:
-          name: original-subtitle
-          path: ${{ steps.whisper.outputs.original_srt }}
-          retention-days: 30
       
       - name: Translate subtitle
         id: translate
@@ -158,14 +169,68 @@ jobs:
           
           echo "translated_srt=$OUTPUT" >> $GITHUB_OUTPUT
       
-      - name: Upload translated subtitle
-        if: steps.translate.outputs.translated_srt != ''
+      # ========== ذخیره در Artifact ==========
+      - name: Upload to Artifact
+        if: contains(github.event.inputs.save_location, 'artifact')
         uses: actions/upload-artifact@v4
         with:
-          name: translated-subtitle
-          path: ${{ steps.translate.outputs.translated_srt }}
+          name: subtitles
+          path: |
+            ${{ steps.whisper.outputs.original_srt }}
+            ${{ steps.translate.outputs.translated_srt }}
           retention-days: 30
+      
+      # ========== ذخیره در Repository ==========
+      - name: Save to Repository
+        if: contains(github.event.inputs.save_location, 'repository')
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          
+          mkdir -p subtitles
+          cp "${{ steps.whisper.outputs.original_srt }}" subtitles/
+          
+          if [ -n "${{ steps.translate.outputs.translated_srt }}" ]; then
+            cp "${{ steps.translate.outputs.translated_srt }}" subtitles/
+          fi
+          
+          git add subtitles/
+          git commit -m "Add subtitles [skip ci]" || echo "No changes"
+          git push
+          
+          echo "✅ Saved to repository (subtitles/ folder)"
+      
+      # ========== ذخیره در Release ==========
+      - name: Save to Release
+        if: contains(github.event.inputs.save_location, 'release')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ github.event.inputs.release_tag_output }}"
+          
+          # ایجاد Release اگر وجود نداشته باشد
+          gh release create "$TAG" --notes "Subtitles" --repo "${{ github.repository }}" || true
+          
+          # آپلود فایل‌ها
+          gh release upload "$TAG" "${{ steps.whisper.outputs.original_srt }}" --repo "${{ github.repository }}" --clobber
+          
+          if [ -n "${{ steps.translate.outputs.translated_srt }}" ]; then
+            gh release upload "$TAG" "${{ steps.translate.outputs.translated_srt }}" --repo "${{ github.repository }}" --clobber
+          fi
+          
+          echo "✅ Saved to Release: $TAG"
       
       - name: Cleanup
         if: always()
         run: rm -f input_video.mp4
+      
+      - name: Summary
+        if: always()
+        run: |
+          echo "## ✅ Done!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Item | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Model | ${{ github.event.inputs.whisper_model }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Language | ${{ github.event.inputs.language }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Save Location | ${{ github.event.inputs.save_location }} |" >> $GITHUB_STEP_SUMMARY
