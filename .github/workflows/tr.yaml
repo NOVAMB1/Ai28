@@ -1,10 +1,8 @@
 name: Advanced Subtitle Generator with AI
 
 on:
-  # اجرای دستی با کلی گزینه سفارشی‌سازی
   workflow_dispatch:
     inputs:
-      # ========== نحوه دریافت فیلم ==========
       video_source:
         description: 'نحوه دریافت فیلم'
         required: true
@@ -15,111 +13,77 @@ on:
           - github_release
       
       direct_url:
-        description: 'لینک مستقیم فیلم (اگر گزینه بالا direct_url باشد)'
+        description: 'لینک مستقیم فیلم (اگر direct_url انتخاب شده)'
         required: false
         type: string
         default: ''
       
       release_tag:
-        description: 'تگ Release (اگر گزینه بالا github_release باشد)'
+        description: 'تگ Release (اگر github_release انتخاب شده)'
         required: false
         type: string
         default: 'latest'
       
-      # ========== تنظیمات Whisper ==========
       whisper_model:
-        description: 'مدل Whisper (قوی‌ترین → سریع‌ترین)'
+        description: 'مدل Whisper'
         required: true
         default: 'large-v3'
         type: choice
         options:
-          - 'large-v3 (قوی‌ترین - دقت عالی - کندترین ~3GB)'
-          - 'large (دقت بالا - کند ~3GB)'
-          - 'medium (دقت متوسط - سرعت خوب ~1.5GB)'
-          - 'small (دقت معمولی - سریع ~500MB)'
-          - 'base (دقت پایه - خیلی سریع ~150MB)'
-          - 'tiny (ضعیف‌ترین - فوق سریع ~75MB)'
-          - 'turbo (بهینه - متعادل ~1.5GB)'
+          - 'large-v3'
+          - 'medium'
+          - 'small'
+          - 'turbo'
+          - 'base'
       
       language_detection:
-        description: 'تشخیص خودکار زبان صدا'
+        description: 'زبان صدا'
         required: true
         default: 'auto'
         type: choice
         options:
-          - 'auto (تشخیص خودکار)'
+          - 'auto'
           - 'English'
           - 'Persian'
           - 'Spanish'
           - 'French'
           - 'German'
-          - 'Chinese'
           - 'Japanese'
           - 'Korean'
-          - 'Arabic'
       
-      # ========== تنظیمات ترجمه ==========
       translate_to:
-        description: 'ترجمه به زبان دیگر (در صورت نیاز)'
+        description: 'ترجمه به (none=بدون ترجمه)'
         required: false
         default: 'none'
         type: choice
         options:
-          - 'none (بدون ترجمه)'
-          - 'fa (فارسی)'
-          - 'en (انگلیسی)'
-          - 'es (اسپانیایی)'
-          - 'fr (فرانسوی)'
-          - 'de (آلمانی)'
-          - 'zh (چینی)'
-          - 'ja (ژاپنی)'
-          - 'ko (کره‌ای)'
+          - 'none'
+          - 'fa'
+          - 'en'
+          - 'es'
+          - 'fr'
+          - 'de'
       
-      # ========== تنظیمات محتوایی (Prompt) ==========
       content_type:
-        description: 'نوع محتوا (برای ترجمه بهتر)'
+        description: 'نوع محتوا'
         required: true
         default: 'movie'
         type: choice
         options:
-          - 'movie (فیلم - دیالوگ معمولی)'
-          - 'rap_music (آهنگ رپ - اصطلاحات خیابانی)'
-          - 'anime (انیمه - دیالوگ احساسی و خاص)'
-          - 'documentary (مستند - رسمی و علمی)'
-          - 'podcast (پادکست - محاوره‌ای)'
+          - 'movie'
+          - 'rap_music'
+          - 'anime'
+          - 'documentary'
       
-      custom_prompt:
-        description: 'پرامپت سفارشی (اختیاری - خالی بذارید از دیفالت استفاده کنه)'
-        required: false
-        type: string
-        default: ''
-      
-      # ========== تنظیمات خروجی ==========
       subtitle_format:
-        description: 'فرمت زیرنویس خروجی'
+        description: 'فرمت خروجی'
         required: true
         default: 'srt'
         type: choice
         options:
-          - 'srt (فرمت استاندارد)'
-          - 'ass (فرمت پیشرفته با استایل)'
-          - 'vtt (وب)'
-      
-      save_location:
-        description: 'محل ذخیره فایل نهایی'
-        required: true
-        default: 'artifact'
-        type: choice
-        options:
-          - 'artifact (دانلود موقت - لینک دانلود میگیرید)'
-          - 'repository (کامیت مستقیم به مخزن)'
-          - 'release (آپلود به Release موجود)'
-      
-      release_tag_output:
-        description: 'تگ Release برای ذخیره (اگر save_location=release باشد)'
-        required: false
-        type: string
-        default: 'subtitles'
+          - 'srt'
+          - 'ass'
+          - 'vtt'
 
 jobs:
   process-subtitle:
@@ -129,20 +93,38 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
       
-      # ========== مرحله 1: نصب پیش‌نیازها ==========
-      - name: Install FFmpeg & dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
-          pip install --upgrade pip
+      # ========== کش FFmpeg ==========
+      - name: Cache FFmpeg
+        id: cache-ffmpeg
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/bin/ffmpeg
+          key: ffmpeg-static-v3-${{ runner.os }}
       
-      - name: Install Whisper and tools
+      - name: Install FFmpeg (cached)
+        if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
         run: |
-          pip install git+https://github.com/openai/whisper.git
-          pip install pysrt googletrans==4.0.0rc1 deep-translator
+          echo "📦 Installing FFmpeg..."
+          wget -q https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
+          tar -xf ffmpeg-master-latest-linux64-gpl.tar.xz
+          sudo mv ffmpeg-master-latest-linux64-gpl/bin/ffmpeg /usr/local/bin/
+          sudo mv ffmpeg-master-latest-linux64-gpl/bin/ffprobe /usr/local/bin/
+          rm -rf ffmpeg-master-latest-linux64-gpl*
+          echo "✅ FFmpeg installed"
       
-      # ========== مرحله 2: دانلود فیلم ==========
-      - name: Download video from source
+      - name: Verify FFmpeg
+        run: ffmpeg -version | head -n 1
+      
+      # ========== نصب Whisper ==========
+      - name: Install Whisper
+        run: |
+          pip install --quiet --upgrade pip
+          pip install --quiet git+https://github.com/openai/whisper.git
+          pip install --quiet pysrt deep-translator
+          echo "✅ Whisper installed"
+      
+      # ========== دانلود فیلم ==========
+      - name: Download video
         id: download
         run: |
           if [ "${{ github.event.inputs.video_source }}" = "direct_url" ]; then
@@ -155,309 +137,161 @@ jobs:
             else
               TAG="${{ github.event.inputs.release_tag }}"
             fi
-            
-            DOWNLOAD_URL=$(curl -s "https://api.github.com/repos/${{ github.repository }}/releases/tags/$TAG" \
-              | jq -r '.assets[0].browser_download_url')
-            
+            DOWNLOAD_URL=$(curl -s "https://api.github.com/repos/${{ github.repository }}/releases/tags/$TAG" | jq -r '.assets[0].browser_download_url')
             curl -L -o input_video.mp4 "$DOWNLOAD_URL"
           fi
           
-          # بررسی وجود فایل
           if [ ! -f input_video.mp4 ]; then
-            echo "Error: Video file not downloaded!"
+            echo "Error: Video not downloaded!"
             exit 1
           fi
-          
-          echo "video_size=$(du -sh input_video.mp4 | cut -f1)" >> $GITHUB_OUTPUT
+          echo "✅ Video downloaded: $(du -sh input_video.mp4 | cut -f1)"
       
-      - name: Show video info
-        run: |
-          echo "✅ Video downloaded successfully"
-          echo "📊 Size: ${{ steps.download.outputs.video_size }}"
-          file input_video.mp4
-      
-      # ========== مرحله 3: تنظیم پرامپت بر اساس نوع محتوا ==========
-      - name: Set prompt based on content type
-        id: prompt
-        run: |
-          CONTENT_TYPE="${{ github.event.inputs.content_type }}"
-          CUSTOM_PROMPT="${{ github.event.inputs.custom_prompt }}"
-          
-          if [ -n "$CUSTOM_PROMPT" ]; then
-            PROMPT="$CUSTOM_PROMPT"
-            echo "Using custom prompt"
-          else
-            case "$CONTENT_TYPE" in
-              "rap_music")
-                PROMPT="This is a rap song with street slang, wordplay, and fast delivery. Transcribe exactly as heard including ad-libs, repeated phrases, and cultural references. Preserve the rhythm and flow."
-                ;;
-              "anime")
-                PROMPT="This is anime dialogue with emotional expressions, honorifics, and character-specific speech patterns. Transcribe accurately including interjections, sighs, and unique vocabulary."
-                ;;
-              "documentary")
-                PROMPT="This is documentary narration with formal language, scientific terms, and clear pronunciation. Transcribe precisely including technical vocabulary and proper nouns."
-                ;;
-              "podcast")
-                PROMPT="This is casual podcast conversation with natural speech patterns, filler words, and occasional overlapping dialogue. Transcribe the main speaker clearly."
-                ;;
-              "movie"|*)
-                PROMPT="This is standard movie dialogue. Transcribe speech naturally while maintaining the original meaning and emotional tone."
-                ;;
-            esac
-          fi
-          
-          echo "prompt=$PROMPT" >> $GITHUB_OUTPUT
-          echo "📝 Using prompt: $PROMPT"
-      
-      # ========== مرحله 4: استخراج مدل Whisper ==========
-      - name: Extract model name
-        id: model
-        run: |
-          MODEL_INPUT="${{ github.event.inputs.whisper_model }}"
-          # استخراج نام مدل از بین پرانتزها
-          MODEL=$(echo "$MODEL_INPUT" | cut -d' ' -f1)
-          echo "model=$MODEL" >> $GITHUB_OUTPUT
-          echo "Using Whisper model: $MODEL"
-      
-      # ========== مرحله 5: تشخیص زبان و اجرای Whisper ==========
-      - name: Generate initial subtitle
+      # ========== اجرای Whisper (بدون پرامپت برای جلوگیری از خطا) ==========
+      - name: Generate subtitle
         id: whisper
         run: |
-          LANGUAGE_INPUT="${{ github.event.inputs.language_detection }}"
+          MODEL="${{ github.event.inputs.whisper_model }}"
+          LANG_INPUT="${{ github.event.inputs.language_detection }}"
           
-          if [ "$LANGUAGE_INPUT" = "auto (تشخیص خودکار)" ]; then
-            LANGUAGE_FLAG=""
-            echo "Auto-detecting language..."
+          if [ "$LANG_INPUT" = "auto" ]; then
+            whisper input_video.mp4 --model $MODEL --output_format srt --output_dir .
           else
-            LANGUAGE=$(echo "$LANGUAGE_INPUT" | cut -d' ' -f1 | tr '[:upper:]' '[:lower:]')
-            LANGUAGE_FLAG="--language $LANGUAGE"
-            echo "Using forced language: $LANGUAGE"
+            LANG=$(echo $LANG_INPUT | tr '[:upper:]' '[:lower:]')
+            whisper input_video.mp4 --model $MODEL --language $LANG --output_format srt --output_dir .
           fi
           
-          # اجرای Whisper با مدل انتخابی
-          whisper input_video.mp4 \
-            --model ${{ steps.model.outputs.model }} \
-            $LANGUAGE_FLAG \
-            --prompt "${{ steps.prompt.outputs.prompt }}" \
-            --output_format srt \
-            --output_dir .
-          
-          # پیدا کردن فایل SRT تولید شده
-          SRT_FILE=$(ls *.srt 2>/dev/null | head -n 1)
-          if [ -z "$SRT_FILE" ]; then
-            echo "Error: No SRT file generated!"
-            exit 1
-          fi
-          
-          echo "srt_file=$SRT_FILE" >> $GITHUB_OUTPUT
-          echo "✅ Subtitle generated: $SRT_FILE"
-          
-          # نمایش چند خط اول برای بررسی
-          echo "--- Preview ---"
-          head -n 20 "$SRT_FILE"
+          ORIGINAL_SRT=$(ls *.srt 2>/dev/null | head -n 1)
+          echo "original_srt=$ORIGINAL_SRT" >> $GITHUB_OUTPUT
+          echo "✅ Original subtitle: $ORIGINAL_SRT"
       
-      # ========== مرحله 6: ترجمه (در صورت نیاز) ==========
-      - name: Translate subtitle if needed
+      # ========== ترجمه (فایل اصلی هم نگهداری می‌شود) ==========
+      - name: Translate subtitle
         id: translate
         if: github.event.inputs.translate_to != 'none'
         run: |
-          INPUT_SRT="${{ steps.whisper.outputs.srt_file }}"
-          TARGET_LANG="${{ github.event.inputs.translate_to }}"
+          ORIGINAL="${{ steps.whisper.outputs.original_srt }}"
+          TARGET="${{ github.event.inputs.translate_to }}"
+          TRANSLATED_SRT="translated_${TARGET}.srt"
           
-          # استخراج کد زبان (مثلاً 'fa' از 'fa (فارسی)')
-          TARGET_CODE=$(echo "$TARGET_LANG" | cut -d' ' -f1)
-          
-          OUTPUT_SRT="translated_${TARGET_CODE}.srt"
-          
-          echo "🔄 Translating from detected language to $TARGET_CODE..."
-          
-          # ساخت اسکریپت پایتون برای ترجمه
-          cat > translate_script.py << 'EOF'
+          python3 << EOF
           import pysrt
           from deep_translator import GoogleTranslator
-          import sys
           
-          input_file = sys.argv[1]
-          output_file = sys.argv[2]
-          target_lang = sys.argv[3]
-          
-          subs = pysrt.open(input_file)
-          translator = GoogleTranslator(source='auto', target=target_lang)
-          
+          subs = pysrt.open("$ORIGINAL")
+          translator = GoogleTranslator(source='auto', target='$TARGET')
           total = len(subs)
-          for i, sub in enumerate(subs):
-              try:
-                  translated = translator.translate(sub.text)
-                  sub.text = translated
-                  if (i + 1) % 10 == 0:
-                      print(f"Progress: {i+1}/{total}")
-              except Exception as e:
-                  print(f"Error on line {i+1}: {e}")
-                  continue
           
-          subs.save(output_file)
-          print(f"✅ Translation completed: {output_file}")
+          for i, sub in enumerate(subs):
+              if sub.text.strip():
+                  try:
+                      translated = translator.translate(sub.text)
+                      if translated:
+                          sub.text = translated
+                  except Exception as e:
+                      print(f"Error on line {i+1}: {e}")
+              if (i+1) % 20 == 0:
+                  print(f"Progress: {i+1}/{total}")
+          
+          subs.save("$TRANSLATED_SRT")
+          print("✅ Translation completed")
           EOF
           
-          python translate_script.py "$INPUT_SRT" "$OUTPUT_SRT" "$TARGET_CODE"
-          
-          echo "translated_file=$OUTPUT_SRT" >> $GITHUB_OUTPUT
-          
-          # نمایش پیش‌نمایش ترجمه
-          echo "--- Translated Preview ---"
-          head -n 20 "$OUTPUT_SRT"
+          echo "translated_srt=$TRANSLATED_SRT" >> $GITHUB_OUTPUT
+          echo "✅ Translated: $TRANSLATED_SRT"
       
-      # ========== مرحله 7: تبدیل به فرمت خروجی مورد نظر ==========
+      # ========== تبدیل به فرمت خروجی ==========
       - name: Convert to desired format
         id: format
         run: |
-          SOURCE_FILE="${{ steps.whisper.outputs.srt_file }}"
-          if [ -n "${{ steps.translate.outputs.translated_file }}" ]; then
-            SOURCE_FILE="${{ steps.translate.outputs.translated_file }}"
+          FORMAT="${{ github.event.inputs.subtitle_format }}"
+          
+          convert_one() {
+            local INPUT=$1
+            local NAME=$(basename "$INPUT" .srt)
+            local OUTPUT="${NAME}.${FORMAT}"
+            
+            if [ "$FORMAT" = "srt" ]; then
+              cp "$INPUT" "$OUTPUT"
+            elif [ "$FORMAT" = "ass" ]; then
+              python3 << EOF
+              import pysrt
+              subs = pysrt.open("$INPUT")
+              with open("$OUTPUT", "w", encoding="utf-8") as f:
+                  f.write("[Script Info]\nTitle=Subtitle\nScriptType=v4.00+\n\n[V4+ Styles]\nFormat: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding\nStyle: Default,Arial,40,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,2,20,20,20,1\n\n[Events]\nFormat: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n")
+                  for sub in subs:
+                      start = f"{sub.start.hours:01d}:{sub.start.minutes:02d}:{sub.start.seconds:02d}.{sub.start.milliseconds:03d}"
+                      end = f"{sub.end.hours:01d}:{sub.end.minutes:02d}:{sub.end.seconds:02d}.{sub.end.milliseconds:03d}"
+                      text = sub.text.replace("\n", "\\N")
+                      f.write(f"Dialogue: 0,{start},{end},Default,,0,0,0,,{text}\n")
+              EOF
+            elif [ "$FORMAT" = "vtt" ]; then
+              python3 << EOF
+              import pysrt
+              subs = pysrt.open("$INPUT")
+              with open("$OUTPUT", "w", encoding="utf-8") as f:
+                  f.write("WEBVTT\n\n")
+                  for sub in subs:
+                      start = f"{sub.start.hours:02d}:{sub.start.minutes:02d}:{sub.start.seconds:02d}.{sub.start.milliseconds:03d}"
+                      end = f"{sub.end.hours:02d}:{sub.end.minutes:02d}:{sub.end.seconds:02d}.{sub.end.milliseconds:03d}"
+                      f.write(f"{start} --> {end}\n{sub.text}\n\n")
+              EOF
+            fi
+            echo "$OUTPUT"
+          }
+          
+          # تبدیل فایل اصلی
+          ORIGINAL_OUTPUT=$(convert_one "${{ steps.whisper.outputs.original_srt }}")
+          echo "original_output=$ORIGINAL_OUTPUT" >> $GITHUB_OUTPUT
+          
+          # اگر ترجمه شده، آن را هم تبدیل کن
+          if [ -n "${{ steps.translate.outputs.translated_srt }}" ]; then
+            TRANSLATED_OUTPUT=$(convert_one "${{ steps.translate.outputs.translated_srt }}")
+            echo "translated_output=$TRANSLATED_OUTPUT" >> $GITHUB_OUTPUT
           fi
-          
-          TARGET_FORMAT="${{ github.event.inputs.subtitle_format }}"
-          FORMAT_CODE=$(echo "$TARGET_FORMAT" | cut -d' ' -f1)
-          
-          OUTPUT_FILE="subtitle_final.${FORMAT_CODE}"
-          
-          if [ "$FORMAT_CODE" = "ass" ]; then
-            # تبدیل SRT به ASS با استایل ساده
-            cat > convert_to_ass.py << 'EOF'
-            import pysrt
-            import sys
-            
-            input_srt = sys.argv[1]
-            output_ass = sys.argv[2]
-            
-            subs = pysrt.open(input_srt)
-            
-            with open(output_ass, 'w', encoding='utf-8') as f:
-                f.write("[Script Info]\n")
-                f.write("Title: Generated Subtitle\n")
-                f.write("ScriptType: v4.00+\n")
-                f.write("WrapStyle: 0\n")
-                f.write("PlayResX: 1920\n")
-                f.write("PlayResY: 1080\n\n")
-                
-                f.write("[V4+ Styles]\n")
-                f.write("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n")
-                f.write("Style: Default,Arial,40,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,2,20,20,20,1\n\n")
-                
-                f.write("[Events]\n")
-                f.write("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n")
-                
-                for sub in subs:
-                    start = sub.start.hours*3600 + sub.start.minutes*60 + sub.start.seconds + sub.start.milliseconds/1000
-                    end = sub.end.hours*3600 + sub.end.minutes*60 + sub.end.seconds + sub.end.milliseconds/1000
-                    
-                    start_str = f"{int(start//3600):01d}:{int((start%3600)//60):02d}:{start%60:06.3f}".replace('.', ',')
-                    end_str = f"{int(end//3600):01d}:{int((end%3600)//60):02d}:{end%60:06.3f}".replace('.', ',')
-                    
-                    text = sub.text.replace('\n', '\\N')
-                    f.write(f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{text}\n")
-            
-            print(f"Converted to ASS: {output_ass}")
-            EOF
-            
-            python convert_to_ass.py "$SOURCE_FILE" "$OUTPUT_FILE"
-            
-          elif [ "$FORMAT_CODE" = "vtt" ]; then
-            # تبدیل SRT به WebVTT
-            cat > convert_to_vtt.py << 'EOF'
-            import pysrt
-            import sys
-            
-            input_srt = sys.argv[1]
-            output_vtt = sys.argv[2]
-            
-            subs = pysrt.open(input_srt)
-            
-            with open(output_vtt, 'w', encoding='utf-8') as f:
-                f.write("WEBVTT\n\n")
-                for sub in subs:
-                    start = f"{sub.start.hours:02d}:{sub.start.minutes:02d}:{sub.start.seconds:02d}.{sub.start.milliseconds:03d}"
-                    end = f"{sub.end.hours:02d}:{sub.end.minutes:02d}:{sub.end.seconds:02d}.{sub.end.milliseconds:03d}"
-                    f.write(f"{start} --> {end}\n")
-                    f.write(f"{sub.text}\n\n")
-            print(f"Converted to VTT: {output_vtt}")
-            EOF
-            
-            python convert_to_vtt.py "$SOURCE_FILE" "$OUTPUT_FILE"
-            
-          else
-            # SRT - فقط کپی می‌کنیم
-            cp "$SOURCE_FILE" "$OUTPUT_FILE"
-          fi
-          
-          echo "output_file=$OUTPUT_FILE" >> $GITHUB_OUTPUT
-          echo "✅ Converted to $FORMAT_CODE: $OUTPUT_FILE"
       
-      # ========== مرحله 8: ذخیره در محل مورد نظر ==========
-      - name: Save to chosen location
-        id: save
+      # ========== پاکسازی فایل‌های موقتی ==========
+      - name: Cleanup
         run: |
-          OUTPUT_FILE="${{ steps.format.outputs.output_file }}"
-          SAVE_LOC="${{ github.event.inputs.save_location }}"
-          
-          case "$SAVE_LOC" in
-            "artifact")
-              echo "Saving as GitHub Artifact"
-              # ادامه در مرحله بعد
-              ;;
-            "repository")
-              echo "Committing to repository..."
-              git config user.name "GitHub Actions"
-              git config user.email "actions@github.com"
-              
-              # ایجاد پوشه subtitles اگر وجود ندارد
-              mkdir -p subtitles
-              cp "$OUTPUT_FILE" "subtitles/$(basename "$OUTPUT_FILE")"
-              
-              git add subtitles/
-              git commit -m "Add generated subtitle [skip ci]" || echo "No changes to commit"
-              git push
-              echo "✅ Committed to repository: subtitles/$(basename "$OUTPUT_FILE")"
-              ;;
-            "release")
-              echo "Uploading to Release..."
-              TAG="${{ github.event.inputs.release_tag_output }}"
-              
-              # ایجاد Release اگر وجود ندارد
-              gh release create "$TAG" "$OUTPUT_FILE" --notes "Generated subtitle" --repo "${{ github.repository }}" || \
-              gh release upload "$TAG" "$OUTPUT_FILE" --repo "${{ github.repository }}" --clobber
-              
-              echo "✅ Uploaded to Release: $TAG"
-              ;;
-          esac
-          
-          echo "save_location=$SAVE_LOC" >> $GITHUB_OUTPUT
+          echo "🧹 Cleaning temporary files..."
+          rm -f input_video.mp4
+          rm -f *.wav 2>/dev/null || true
+          rm -f *.mp3 2>/dev/null || true
+          rm -rf __pycache__ 2>/dev/null || true
+          echo "✅ Cleanup done"
       
-      # ========== مرحله 9: آپلود Artifact (اگر انتخاب شده باشد) ==========
-      - name: Upload Artifact
-        if: github.event.inputs.save_location == 'artifact'
+      # ========== آپلود فایل اصلی ==========
+      - name: Upload original subtitle
         uses: actions/upload-artifact@v4
         with:
-          name: subtitle-output
-          path: ${{ steps.format.outputs.output_file }}
-          retention-days: 90
+          name: original-subtitle
+          path: ${{ steps.format.outputs.original_output }}
+          retention-days: 30
       
-      # ========== مرحله 10: نمایش خلاصه نهایی ==========
+      # ========== آپلود فایل ترجمه شده (اگر وجود داشته باشد) ==========
+      - name: Upload translated subtitle
+        if: steps.format.outputs.translated_output != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: translated-subtitle
+          path: ${{ steps.format.outputs.translated_output }}
+          retention-days: 30
+      
+      # ========== خلاصه نهایی ==========
       - name: Summary
         run: |
           echo "## ✅ Processing Complete!" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 📊 Input Info:" >> $GITHUB_STEP_SUMMARY
-          echo "- Video size: ${{ steps.download.outputs.video_size }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Whisper model: ${{ steps.model.outputs.model }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Content type: ${{ github.event.inputs.content_type }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 📄 Output Info:" >> $GITHUB_STEP_SUMMARY
+          echo "### 📊 Info:" >> $GITHUB_STEP_SUMMARY
+          echo "- Model: ${{ github.event.inputs.whisper_model }}" >> $GITHUB_STEP_SUMMARY
           echo "- Format: ${{ github.event.inputs.subtitle_format }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Saved to: ${{ steps.save.outputs.save_location }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Output file: ${{ steps.format.outputs.output_file }}" >> $GITHUB_STEP_SUMMARY
-          
-          if [ "${{ github.event.inputs.save_location }}" = "artifact" ]; then
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "⬇️ **Download from Artifacts section below**" >> $GITHUB_STEP_SUMMARY
+          echo "- Language: ${{ github.event.inputs.language_detection }}" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ github.event.inputs.translate_to }}" != "none" ]; then
+            echo "- Translation: to ${{ github.event.inputs.translate_to }} ✅" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📥 Download:" >> $GITHUB_STEP_SUMMARY
+          echo "- Original subtitle: from 'original-subtitle' artifact" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ github.event.inputs.translate_to }}" != "none" ]; then
+            echo "- Translated subtitle: from 'translated-subtitle' artifact" >> $GITHUB_STEP_SUMMARY
           fi
