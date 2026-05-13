@@ -13,13 +13,13 @@ on:
           - github_release
       
       direct_url:
-        description: 'لینک مستقیم فیلم (اگر direct_url انتخاب شده)'
+        description: 'لینک مستقیم فیلم'
         required: false
         type: string
         default: ''
       
       release_tag:
-        description: 'تگ Release (اگر github_release انتخاب شده)'
+        description: 'تگ Release'
         required: false
         type: string
         default: 'latest'
@@ -27,14 +27,14 @@ on:
       whisper_model:
         description: 'مدل Whisper'
         required: true
-        default: 'large-v3'
+        default: 'base'
         type: choice
         options:
-          - 'large-v3'
-          - 'medium'
-          - 'small'
-          - 'turbo'
           - 'base'
+          - 'small'
+          - 'medium'
+          - 'large-v3'
+          - 'turbo'
       
       language_detection:
         description: 'زبان صدا'
@@ -52,7 +52,7 @@ on:
           - 'Korean'
       
       translate_to:
-        description: 'ترجمه به (none=بدون ترجمه)'
+        description: 'ترجمه به'
         required: false
         default: 'none'
         type: choice
@@ -93,34 +93,19 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
       
-      # ========== کش FFmpeg ==========
-      - name: Cache FFmpeg
-        id: cache-ffmpeg
-        uses: actions/cache@v4
-        with:
-          path: /usr/local/bin/ffmpeg
-          key: ffmpeg-static-v3-${{ runner.os }}
-      
-      - name: Install FFmpeg (cached)
-        if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
+      # ========== نصب FFmpeg ==========
+      - name: Install FFmpeg
         run: |
-          echo "📦 Installing FFmpeg..."
-          wget -q https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
-          tar -xf ffmpeg-master-latest-linux64-gpl.tar.xz
-          sudo mv ffmpeg-master-latest-linux64-gpl/bin/ffmpeg /usr/local/bin/
-          sudo mv ffmpeg-master-latest-linux64-gpl/bin/ffprobe /usr/local/bin/
-          rm -rf ffmpeg-master-latest-linux64-gpl*
-          echo "✅ FFmpeg installed"
-      
-      - name: Verify FFmpeg
-        run: ffmpeg -version | head -n 1
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          ffmpeg -version | head -n 1
       
       # ========== نصب Whisper ==========
       - name: Install Whisper
         run: |
-          pip install --quiet --upgrade pip
-          pip install --quiet git+https://github.com/openai/whisper.git
-          pip install --quiet pysrt deep-translator
+          pip install --upgrade pip
+          pip install openai-whisper
+          pip install pysrt deep-translator
           echo "✅ Whisper installed"
       
       # ========== دانلود فیلم ==========
@@ -145,27 +130,40 @@ jobs:
             echo "Error: Video not downloaded!"
             exit 1
           fi
-          echo "✅ Video downloaded: $(du -sh input_video.mp4 | cut -f1)"
+          echo "✅ Video downloaded"
+          ls -lh input_video.mp4
       
-      # ========== اجرای Whisper (بدون پرامپت برای جلوگیری از خطا) ==========
+      # ========== اجرای Whisper ==========
       - name: Generate subtitle
         id: whisper
         run: |
           MODEL="${{ github.event.inputs.whisper_model }}"
           LANG_INPUT="${{ github.event.inputs.language_detection }}"
           
+          echo "Using model: $MODEL"
+          
           if [ "$LANG_INPUT" = "auto" ]; then
-            whisper input_video.mp4 --model $MODEL --output_format srt --output_dir .
+            whisper input_video.mp4 --model $MODEL --output_format srt --output_dir . --verbose True
           else
             LANG=$(echo $LANG_INPUT | tr '[:upper:]' '[:lower:]')
-            whisper input_video.mp4 --model $MODEL --language $LANG --output_format srt --output_dir .
+            whisper input_video.mp4 --model $MODEL --language $LANG --output_format srt --output_dir . --verbose True
           fi
           
+          # بررسی فایل خروجی
+          echo "Files in directory:"
+          ls -la *.srt 2>/dev/null || echo "No SRT files found"
+          
           ORIGINAL_SRT=$(ls *.srt 2>/dev/null | head -n 1)
+          if [ -z "$ORIGINAL_SRT" ]; then
+            echo "Error: No subtitle file generated!"
+            exit 1
+          fi
+          
           echo "original_srt=$ORIGINAL_SRT" >> $GITHUB_OUTPUT
-          echo "✅ Original subtitle: $ORIGINAL_SRT"
+          echo "✅ Subtitle generated: $ORIGINAL_SRT"
+          cat "$ORIGINAL_SRT" | head -n 20
       
-      # ========== ترجمه (فایل اصلی هم نگهداری می‌شود) ==========
+      # ========== ترجمه ==========
       - name: Translate subtitle
         id: translate
         if: github.event.inputs.translate_to != 'none'
@@ -174,39 +172,48 @@ jobs:
           TARGET="${{ github.event.inputs.translate_to }}"
           TRANSLATED_SRT="translated_${TARGET}.srt"
           
+          echo "Translating from $ORIGINAL to $TARGET"
+          
           python3 << EOF
           import pysrt
           from deep_translator import GoogleTranslator
           
-          subs = pysrt.open("$ORIGINAL")
-          translator = GoogleTranslator(source='auto', target='$TARGET')
-          total = len(subs)
+          input_file = "$ORIGINAL"
+          output_file = "$TRANSLATED_SRT"
+          target_lang = "$TARGET"
+          
+          print(f"Reading: {input_file}")
+          subs = pysrt.open(input_file)
+          print(f"Loaded {len(subs)} subtitles")
+          
+          translator = GoogleTranslator(source='auto', target=target_lang)
           
           for i, sub in enumerate(subs):
-              if sub.text.strip():
+              if sub.text and sub.text.strip():
                   try:
                       translated = translator.translate(sub.text)
                       if translated:
                           sub.text = translated
                   except Exception as e:
-                      print(f"Error on line {i+1}: {e}")
-              if (i+1) % 20 == 0:
-                  print(f"Progress: {i+1}/{total}")
+                      print(f"Error line {i+1}: {e}")
+              if (i+1) % 10 == 0:
+                  print(f"Progress: {i+1}/{len(subs)}")
           
-          subs.save("$TRANSLATED_SRT")
-          print("✅ Translation completed")
+          subs.save(output_file)
+          print(f"Saved: {output_file}")
           EOF
           
           echo "translated_srt=$TRANSLATED_SRT" >> $GITHUB_OUTPUT
-          echo "✅ Translated: $TRANSLATED_SRT"
+          echo "✅ Translation done"
       
-      # ========== تبدیل به فرمت خروجی ==========
-      - name: Convert to desired format
+      # ========== تبدیل فرمت ==========
+      - name: Convert format
         id: format
         run: |
           FORMAT="${{ github.event.inputs.subtitle_format }}"
           
-          convert_one() {
+          # تابع تبدیل
+          convert() {
             local INPUT=$1
             local NAME=$(basename "$INPUT" .srt)
             local OUTPUT="${NAME}.${FORMAT}"
@@ -241,23 +248,24 @@ jobs:
           }
           
           # تبدیل فایل اصلی
-          ORIGINAL_OUTPUT=$(convert_one "${{ steps.whisper.outputs.original_srt }}")
-          echo "original_output=$ORIGINAL_OUTPUT" >> $GITHUB_OUTPUT
+          ORIG_OUT=$(convert "${{ steps.whisper.outputs.original_srt }}")
+          echo "original_output=$ORIG_OUT" >> $GITHUB_OUTPUT
+          echo "✅ Original converted: $ORIG_OUT"
           
-          # اگر ترجمه شده، آن را هم تبدیل کن
+          # تبدیل فایل ترجمه شده (اگر وجود داشته باشد)
           if [ -n "${{ steps.translate.outputs.translated_srt }}" ]; then
-            TRANSLATED_OUTPUT=$(convert_one "${{ steps.translate.outputs.translated_srt }}")
-            echo "translated_output=$TRANSLATED_OUTPUT" >> $GITHUB_OUTPUT
+            TRANS_OUT=$(convert "${{ steps.translate.outputs.translated_srt }}")
+            echo "translated_output=$TRANS_OUT" >> $GITHUB_OUTPUT
+            echo "✅ Translated converted: $TRANS_OUT"
           fi
       
-      # ========== پاکسازی فایل‌های موقتی ==========
+      # ========== پاکسازی ==========
       - name: Cleanup
         run: |
-          echo "🧹 Cleaning temporary files..."
+          echo "🧹 Cleaning..."
           rm -f input_video.mp4
           rm -f *.wav 2>/dev/null || true
           rm -f *.mp3 2>/dev/null || true
-          rm -rf __pycache__ 2>/dev/null || true
           echo "✅ Cleanup done"
       
       # ========== آپلود فایل اصلی ==========
@@ -268,7 +276,7 @@ jobs:
           path: ${{ steps.format.outputs.original_output }}
           retention-days: 30
       
-      # ========== آپلود فایل ترجمه شده (اگر وجود داشته باشد) ==========
+      # ========== آپلود فایل ترجمه شده ==========
       - name: Upload translated subtitle
         if: steps.format.outputs.translated_output != ''
         uses: actions/upload-artifact@v4
@@ -277,21 +285,18 @@ jobs:
           path: ${{ steps.format.outputs.translated_output }}
           retention-days: 30
       
-      # ========== خلاصه نهایی ==========
+      # ========== خلاصه ==========
       - name: Summary
         run: |
-          echo "## ✅ Processing Complete!" >> $GITHUB_STEP_SUMMARY
+          echo "## ✅ Done!" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 📊 Info:" >> $GITHUB_STEP_SUMMARY
-          echo "- Model: ${{ github.event.inputs.whisper_model }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Format: ${{ github.event.inputs.subtitle_format }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Language: ${{ github.event.inputs.language_detection }}" >> $GITHUB_STEP_SUMMARY
+          echo "| Item | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Model | ${{ github.event.inputs.whisper_model }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Format | ${{ github.event.inputs.subtitle_format }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Language | ${{ github.event.inputs.language_detection }} |" >> $GITHUB_STEP_SUMMARY
           if [ "${{ github.event.inputs.translate_to }}" != "none" ]; then
-            echo "- Translation: to ${{ github.event.inputs.translate_to }} ✅" >> $GITHUB_STEP_SUMMARY
+            echo "| Translation | to ${{ github.event.inputs.translate_to }} ✅ |" >> $GITHUB_STEP_SUMMARY
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 📥 Download:" >> $GITHUB_STEP_SUMMARY
-          echo "- Original subtitle: from 'original-subtitle' artifact" >> $GITHUB_STEP_SUMMARY
-          if [ "${{ github.event.inputs.translate_to }}" != "none" ]; then
-            echo "- Translated subtitle: from 'translated-subtitle' artifact" >> $GITHUB_STEP_SUMMARY
-          fi
+          echo "📥 Download from Artifacts below" >> $GITHUB_STEP_SUMMARY
