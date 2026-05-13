@@ -27,20 +27,23 @@ on:
       whisper_model:
         description: 'مدل Whisper'
         required: true
-        default: 'base'
+        default: 'small'
         type: choice
         options:
-          - 'base'
-          - 'small'
-          - 'medium'
-          - 'large-v3'
+          - 'tiny (سریع‌ترین - کیفیت پایین)'
+          - 'base (سریع - کیفیت متوسط)'
+          - 'small (متوسط - کیفیت خوب)'
+          - 'medium (کند - کیفیت عالی)'
+          - 'large (خیلی کند - کیفیت فوق‌العاده)'
+          - 'turbo (بهینه - سرعت و کیفیت خوب)'
       
-      language:
-        description: 'زبان صدا (حتما انتخاب کنید)'
+      language_detection:
+        description: 'زبان صدا'
         required: true
-        default: 'English'
+        default: 'auto'
         type: choice
         options:
+          - 'auto (تشخیص خودکار)'
           - 'English'
           - 'Persian'
           - 'Russian'
@@ -52,21 +55,29 @@ on:
           - 'Chinese'
       
       translate_to:
-        description: 'ترجمه به فارسی؟'
+        description: 'ترجمه به'
         required: false
         default: 'none'
         type: choice
         options:
           - 'none'
-          - 'fa'
+          - 'fa (فارسی)'
+          - 'en (انگلیسی)'
+          - 'es (اسپانیایی)'
+          - 'fr (فرانسوی)'
+          - 'de (آلمانی)'
       
-      output_format:
-        description: 'فرمت خروجی'
+      content_type:
+        description: 'نوع محتوا (برای دقت بهتر)'
         required: true
-        default: 'srt'
+        default: 'auto'
         type: choice
         options:
-          - 'srt'
+          - 'auto'
+          - 'rap_music'
+          - 'anime'
+          - 'movie'
+          - 'documentary'
 
 jobs:
   process-subtitle:
@@ -114,23 +125,54 @@ jobs:
           fi
           echo "✅ Video downloaded: $(du -sh input_video.mp4 | cut -f1)"
       
-      # ========== اجرای Whisper با زبان مشخص ==========
+      # ========== تنظیم پرامپت بر اساس نوع محتوا ==========
+      - name: Set prompt
+        id: prompt
+        run: |
+          CONTENT="${{ github.event.inputs.content_type }}"
+          if [ "$CONTENT" = "rap_music" ]; then
+            PROMPT="Rap song with street slang, fast delivery, ad-libs. Transcribe exactly."
+          elif [ "$CONTENT" = "anime" ]; then
+            PROMPT="Anime dialogue with emotional expressions and honorifics."
+          elif [ "$CONTENT" = "documentary" ]; then
+            PROMPT="Documentary narration with formal and scientific terms."
+          else
+            PROMPT=""
+          fi
+          echo "prompt=$PROMPT" >> $GITHUB_OUTPUT
+      
+      # ========== استخراج نام مدل ==========
+      - name: Extract model
+        id: model
+        run: |
+          MODEL_INPUT="${{ github.event.inputs.whisper_model }}"
+          MODEL=$(echo "$MODEL_INPUT" | cut -d' ' -f1)
+          echo "model=$MODEL" >> $GITHUB_OUTPUT
+      
+      # ========== اجرای Whisper ==========
       - name: Generate subtitle
         id: whisper
         run: |
-          MODEL="${{ github.event.inputs.whisper_model }}"
-          LANG="${{ github.event.inputs.language }}"
+          MODEL="${{ steps.model.outputs.model }}"
+          LANG_INPUT="${{ github.event.inputs.language_detection }}"
+          PROMPT="${{ steps.prompt.outputs.prompt }}"
           
-          echo "Using model: $MODEL, language: $LANG"
-          
-          whisper input_video.mp4 \
-            --model $MODEL \
-            --language $LANG \
-            --output_format srt \
-            --output_dir .
+          if [ "$LANG_INPUT" = "auto (تشخیص خودکار)" ]; then
+            if [ -n "$PROMPT" ]; then
+              whisper input_video.mp4 --model $MODEL --prompt "$PROMPT" --output_format srt --output_dir .
+            else
+              whisper input_video.mp4 --model $MODEL --output_format srt --output_dir .
+            fi
+          else
+            LANG=$(echo "$LANG_INPUT" | cut -d' ' -f1 | tr '[:upper:]' '[:lower:]')
+            if [ -n "$PROMPT" ]; then
+              whisper input_video.mp4 --model $MODEL --language $LANG --prompt "$PROMPT" --output_format srt --output_dir .
+            else
+              whisper input_video.mp4 --model $MODEL --language $LANG --output_format srt --output_dir .
+            fi
+          fi
           
           ORIGINAL_SRT=$(ls *.srt 2>/dev/null | grep -v "translated" | head -n 1)
-          
           if [ -z "$ORIGINAL_SRT" ]; then
             echo "Error: No subtitle file generated!"
             exit 1
@@ -138,12 +180,10 @@ jobs:
           
           echo "original_srt=$ORIGINAL_SRT" >> $GITHUB_OUTPUT
           echo "✅ Subtitle generated: $ORIGINAL_SRT"
-          
-          # نمایش پیش‌نمایش
           echo "--- Preview ---"
           head -n 15 "$ORIGINAL_SRT"
       
-      # ========== آپلود فایل اصلی (همیشه آپلود می‌شود) ==========
+      # ========== آپلود فایل اصلی ==========
       - name: Upload original subtitle
         uses: actions/upload-artifact@v4
         with:
@@ -151,28 +191,23 @@ jobs:
           path: ${{ steps.whisper.outputs.original_srt }}
           retention-days: 30
       
-      # ========== ترجمه (اگر انتخاب شده باشد) ==========
+      # ========== ترجمه ==========
       - name: Translate subtitle
         id: translate
-        if: github.event.inputs.translate_to == 'fa'
-        continue-on-error: true  # مهم: حتی اگر خطا بده، ادامه بده
+        if: github.event.inputs.translate_to != 'none'
+        continue-on-error: true
         run: |
           ORIGINAL="${{ steps.whisper.outputs.original_srt }}"
-          TRANSLATED_SRT="translated_fa.srt"
+          TARGET=$(echo "${{ github.event.inputs.translate_to }}" | cut -d' ' -f1)
+          TRANSLATED_SRT="translated_${TARGET}.srt"
           
-          echo "Translating to Persian..."
-          
-          python3 << 'EOF'
+          python3 << EOF
           import pysrt
           from deep_translator import GoogleTranslator
           
-          input_file = "${{ steps.whisper.outputs.original_srt }}"
-          output_file = "translated_fa.srt"
-          
-          subs = pysrt.open(input_file)
-          print(f"Loaded {len(subs)} subtitles")
-          
-          translator = GoogleTranslator(source='auto', target='fa')
+          subs = pysrt.open("$ORIGINAL")
+          translator = GoogleTranslator(source='auto', target='$TARGET')
+          total = len(subs)
           
           for i, sub in enumerate(subs):
               if sub.text and sub.text.strip():
@@ -183,20 +218,17 @@ jobs:
                   except Exception as e:
                       print(f"Error line {i+1}: {e}")
               if (i+1) % 10 == 0:
-                  print(f"Progress: {i+1}/{len(subs)}")
+                  print(f"Progress: {i+1}/{total}")
           
-          subs.save(output_file)
-          print(f"✅ Saved: {output_file}")
+          subs.save("$TRANSLATED_SRT")
+          print("✅ Translation completed")
           EOF
           
-          if [ -f translated_fa.srt ]; then
-            echo "translated_srt=translated_fa.srt" >> $GITHUB_OUTPUT
-            echo "✅ Translation completed"
-          else
-            echo "⚠️ Translation failed, but original subtitle is saved"
+          if [ -f "$TRANSLATED_SRT" ]; then
+            echo "translated_srt=$TRANSLATED_SRT" >> $GITHUB_OUTPUT
           fi
       
-      # ========== آپلود فایل ترجمه شده (اگر ساخته شده باشد) ==========
+      # ========== آپلود فایل ترجمه شده ==========
       - name: Upload translated subtitle
         if: steps.translate.outputs.translated_srt != ''
         uses: actions/upload-artifact@v4
@@ -213,21 +245,20 @@ jobs:
           rm -f *.wav 2>/dev/null || true
           echo "✅ Cleanup done"
       
-      # ========== خلاصه نهایی ==========
+      # ========== خلاصه ==========
       - name: Summary
         if: always()
         run: |
-          echo "## ✅ Workflow Complete!" >> $GITHUB_STEP_SUMMARY
+          echo "## ✅ Complete!" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Item | Result |" >> $GITHUB_STEP_SUMMARY
-          echo "|------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Model | ${{ github.event.inputs.whisper_model }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Language | ${{ github.event.inputs.language }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Original Subtitle | ✅ Saved |" >> $GITHUB_STEP_SUMMARY
+          echo "| Item | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Model | ${{ steps.model.outputs.model }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Language | ${{ github.event.inputs.language_detection }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Content Type | ${{ github.event.inputs.content_type }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Original | ✅ Saved |" >> $GITHUB_STEP_SUMMARY
           if [ "${{ steps.translate.outputs.translated_srt }}" != "" ]; then
-            echo "| Translated Subtitle | ✅ Saved |" >> $GITHUB_STEP_SUMMARY
-          elif [ "${{ github.event.inputs.translate_to }}" == "fa" ]; then
-            echo "| Translated Subtitle | ⚠️ Failed (original saved) |" >> $GITHUB_STEP_SUMMARY
+            echo "| Translation | ✅ Saved |" >> $GITHUB_STEP_SUMMARY
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "📥 **Download from Artifacts below**" >> $GITHUB_STEP_SUMMARY
+          echo "📥 **Download from Artifacts**" >> $GITHUB_STEP_SUMMARY
